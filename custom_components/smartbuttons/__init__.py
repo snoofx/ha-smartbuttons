@@ -6,16 +6,22 @@ here; HA sends each panel its layout, the states it shows, and carries out its k
 
 from __future__ import annotations
 
+import logging
+
+import aiohttp
+
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 from .api import async_register_commands, async_register_panel
-from .const import DOMAIN
-from .link import PanelLink
+from .const import CONF_LINK_KEY, DOMAIN
+from .link import PanelLink, async_unpair
 from .store import LayoutStore
+
+_LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.UPDATE]
@@ -47,7 +53,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: SmartButtonsConfigEntry
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: SmartButtonsConfigEntry) -> None:
-    """A removed panel loses its stored layout. The panel itself keeps its copy."""
+    """A removed panel loses its stored layout and is unpaired, so it can be added again.
+    The panel keeps its copy of the layout."""
     store: LayoutStore | None = hass.data.get(DOMAIN)
     if store is not None and entry.unique_id:
         store.remove(entry.unique_id)
+    try:
+        await async_unpair(hass, entry.data[CONF_HOST], entry.data[CONF_LINK_KEY])
+    except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as err:
+        _LOGGER.warning(
+            "%s could not be unpaired (%s). Hold SW6 and SW10 at power-on, or use its web UI",
+            entry.title, err,
+        )

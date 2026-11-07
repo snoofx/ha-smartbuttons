@@ -40,6 +40,7 @@ from .store import LayoutError, LayoutStore, clean_layout, layout_entities
 _LOGGER = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 10
+ADOPT_TIMEOUT = 40
 RETRY_MIN = 2
 RETRY_MAX = 60
 MAX_MESSAGE = 64 * 1024
@@ -70,17 +71,64 @@ def link_proof(key: str, nonce: str) -> str:
     return hmac.new(bytes.fromhex(key), nonce.encode(), hashlib.sha256).hexdigest()
 
 
+async def _async_prove(ws: aiohttp.ClientWebSocketResponse, key: str) -> bool:
+    """Reads the hello and proves the key. The panel only answers a wrong proof (auth_failed)."""
+    msg = await ws.receive()
+    hello = json.loads(msg.data) if msg.type == aiohttp.WSMsgType.TEXT else {}
+    if not hello.get("paired"):
+        return False
+    await ws.send_str(json_dumps({"type": "auth", "hmac": link_proof(key, str(hello.get("nonce", "")))}))
+    try:
+        reply = await ws.receive(timeout=2)
+    except TimeoutError:
+        return True
+    if reply.type != aiohttp.WSMsgType.TEXT:
+        return False  # closed after a wrong proof
+    return json.loads(reply.data).get("type") != "auth_failed"
+
+
+async def async_verify_key(hass: HomeAssistant, host: str, key: str) -> bool:
+    """True if the panel is paired with this key."""
+    session = async_get_clientsession(hass)
+    async with asyncio.timeout(CONNECT_TIMEOUT):
+        async with session.ws_connect(f"ws://{host}:{LINK_PORT}/", max_msg_size=MAX_MESSAGE) as ws:
+            return await _async_prove(ws, key)
+
+
 async def async_adopt(hass: HomeAssistant, host: str, key: str, password: str) -> None:
     """Switches a locally managed, unpaired panel to Home Assistant and pairs it. It restarts.
-    A panel with password only accepts it together with that password."""
+    A panel with password only accepts it together with that password. Success is checked on
+    the restarted panel, not by the reply: that can get lost when the panel restarts."""
     session = async_get_clientsession(hass)
     async with asyncio.timeout(CONNECT_TIMEOUT):
         async with session.ws_connect(f"ws://{host}:{LINK_PORT}/", max_msg_size=MAX_MESSAGE) as ws:
             await ws.receive()  # hello
             await ws.send_str(json_dumps({"type": "adopt", "key": key, "password": password}))
-            reply = await ws.receive()
-            if reply.type != aiohttp.WSMsgType.TEXT or json.loads(reply.data).get("type") != "adopted":
-                raise ValueError("panel did not switch to Home Assistant (password?)")
+            try:
+                reply = await ws.receive(timeout=5)
+                if reply.type == aiohttp.WSMsgType.TEXT and json.loads(reply.data).get("type") == "config_error":
+                    raise ValueError("panel refused the takeover (password?)")
+            except TimeoutError:
+                pass
+    async with asyncio.timeout(ADOPT_TIMEOUT):
+        while True:
+            await asyncio.sleep(2)
+            try:
+                hello = await async_read_hello(hass, host)
+                if hello.get("mode") == "ha" and await async_verify_key(hass, host, key):
+                    return
+            except (aiohttp.ClientError, TimeoutError, OSError, ValueError):
+                pass  # restarting
+
+
+async def async_unpair(hass: HomeAssistant, host: str, key: str) -> None:
+    """Lets the panel go, so another HA (or this one again) can add it."""
+    session = async_get_clientsession(hass)
+    async with asyncio.timeout(CONNECT_TIMEOUT):
+        async with session.ws_connect(f"ws://{host}:{LINK_PORT}/", max_msg_size=MAX_MESSAGE) as ws:
+            if await _async_prove(ws, key):
+                await ws.send_str(json_dumps({"type": "unpair"}))
+                await ws.receive(timeout=3)
 
 
 class PanelLink:
