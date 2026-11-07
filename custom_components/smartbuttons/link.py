@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 import hmac
 import json
 import logging
@@ -42,8 +43,14 @@ _LOGGER = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 10
 ADOPT_TIMEOUT = 40
+# A restarting panel is back after a few seconds: try often then, and give up a hanging
+# connect quickly. Long pauses only when it stays away.
+LINK_CONNECT_TIMEOUT = 4
+RETRY_FAST = 1
+FAST_PHASE = 120
 RETRY_MIN = 2
 RETRY_MAX = 60
+HEARTBEAT = 10      # a panel that lost power is noticed within about 15 s
 MAX_MESSAGE = 64 * 1024
 
 
@@ -150,6 +157,7 @@ class PanelLink:
         self.auth_failed = False  # the panel is paired with another HA
         self.hellos = 0  # counts restarts and reconnects, for the firmware update
         self._name_requested: str | None = None
+        self._wake = asyncio.Event()
         self.name: str = entry.title
         self.mode: str | None = None  # "ha" or "local", from the last hello
         self.version: str | None = None
@@ -190,11 +198,12 @@ class PanelLink:
     async def _run(self) -> None:
         session = async_get_clientsession(self.hass)
         delay = RETRY_MIN
+        fast_until = time.monotonic() + FAST_PHASE
         while True:
             try:
-                async with asyncio.timeout(CONNECT_TIMEOUT):
+                async with asyncio.timeout(LINK_CONNECT_TIMEOUT):
                     ws = await session.ws_connect(
-                        f"ws://{self.host}:{LINK_PORT}/", heartbeat=30, max_msg_size=MAX_MESSAGE
+                        f"ws://{self.host}:{LINK_PORT}/", heartbeat=HEARTBEAT, max_msg_size=MAX_MESSAGE
                     )
                 delay = RETRY_MIN
                 _LOGGER.debug("%s: connected", self.host)
@@ -202,12 +211,27 @@ class PanelLink:
                     await self._session(ws)
                 finally:
                     await ws.close()
+                    fast_until = time.monotonic() + FAST_PHASE  # it restarts, probably
             except (aiohttp.ClientError, TimeoutError, OSError) as err:
                 _LOGGER.debug("%s: connection failed: %s", self.host, err)
             finally:
                 self._end_session()
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, RETRY_MAX)
+            if time.monotonic() < fast_until:
+                wait = min(RETRY_FAST, delay)
+            else:
+                wait, delay = delay, min(delay * 2, RETRY_MAX)
+            # mDNS announcements of the panel cut the pause short, see wake().
+            try:
+                await asyncio.wait_for(self._wake.wait(), wait)
+            except TimeoutError:
+                pass
+            self._wake.clear()
+
+    @callback
+    def wake(self) -> None:
+        """The panel announced itself (started): reconnect now instead of after the pause."""
+        if not self.connected:
+            self._wake.set()
 
     async def _session(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         self._ws = ws

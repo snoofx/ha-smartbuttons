@@ -9,7 +9,7 @@ from typing import Any
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntryState, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
@@ -44,6 +44,10 @@ class SmartButtonsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._mode = discovery_info.properties.get("mode", "ha")
         self._paired = discovery_info.properties.get("paired") == "1"
         await self.async_set_unique_id(panel_id)
+        # A known panel that announces itself has (re)started: let its connection retry now.
+        entry = self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, panel_id)
+        if entry is not None and entry.state is ConfigEntryState.LOADED:
+            entry.runtime_data.wake()
         # A new IP of a known panel is taken over, the entry reloads.
         self._abort_if_unique_id_configured(updates={CONF_HOST: self._host})
         self.context["title_placeholders"] = {"name": self._name}
