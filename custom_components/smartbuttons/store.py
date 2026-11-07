@@ -18,7 +18,9 @@ from homeassistant.helpers.storage import Store
 
 from .const import ENTITY_KEYS, MAX_LAYOUT_BYTES, PASSWORD_LENGTH, STORAGE_KEY, STORAGE_VERSION
 
-EMPTY_LAYOUT: dict[str, Any] = {"buttons": [], "presets": {"entity_id": "", "scenes": []}}
+EMPTY_LAYOUT: dict[str, Any] = {"buttons": [], "pages": []}
+MAX_PAGES = 8               # own pages next to START, as in the firmware
+FAV_SLOTS = (0, 1, 5, 6, 2)
 # Set per panel, never part of a configuration.
 PANEL_KEYS = ("name", "_managed", "rotate_180")
 
@@ -33,11 +35,50 @@ def layout_revision(layout: dict[str, Any]) -> str:
     return hashlib.sha1(text.encode()).hexdigest()[:12]
 
 
+def convert_presets(layout: dict[str, Any]) -> dict[str, Any]:
+    """Before v0.8 there was one fixed PRESETS page (favorites, brightness, power, RGB of
+    presets.entity_id). It becomes an own page; the START cell with "page": "presets" links to it.
+    Same conversion as convertPresetsPage() in the firmware and normalize() in the editor."""
+    layout = copy.deepcopy(layout)
+    presets = layout.pop("presets", None) or {}
+    pages = layout.setdefault("pages", [])
+    link = next((b for b in layout.get("buttons", []) if b.get("page") == "presets"), None)
+    if link is None or len(pages) >= MAX_PAGES:
+        if link is not None:
+            link.pop("page")
+        return layout
+    lamp = presets.get("entity_id") or ""
+    cells: list[dict[str, Any]] = []
+    for slot, fav in zip(FAV_SLOTS, presets.get("scenes") or []):
+        if not fav.get("label") or not (fav.get("entity_id") or lamp):
+            continue
+        cell = {"id": slot, "label": fav["label"], "icon": "heart", "color_on": "magenta", "color_off": "magenta"}
+        if fav.get("entity_id"):
+            cell["entity_id"] = fav["entity_id"]
+        else:
+            cell.update({"type": "light", "entity_id": lamp, "data": fav.get("data") or {}})
+        cells.append(cell)
+    if lamp:
+        cells += [
+            {"id": 3, "type": "brighter", "entity_id": lamp},
+            {"id": 4, "entity_id": lamp, "icon": "power", "color_on": "gruen", "color_off": "dunkelrot"},
+            {"id": 7, "type": "rgb", "entity_id": lamp, "label": "RGB"},
+            {"id": 8, "type": "darker", "entity_id": lamp},
+        ]
+    cells.append({"id": 9, "type": "back"})
+    pages.append({"name": "PRESETS", "buttons": sorted(cells, key=lambda c: c["id"])})
+    link["type"] = "page"
+    link["page"] = len(pages)
+    return layout
+
+
 def clean_layout(layout: Any) -> dict[str, Any]:
     """Checks a layout from the editor or a panel and drops what belongs to the panel."""
     if not isinstance(layout, dict) or not isinstance(layout.get("buttons"), list):
         raise LayoutError("layout needs a buttons list")
-    layout = {k: v for k, v in layout.items() if k not in PANEL_KEYS}
+    layout = convert_presets({k: v for k, v in layout.items() if k not in PANEL_KEYS})
+    if len(layout["pages"]) > MAX_PAGES:
+        raise LayoutError(f"at most {MAX_PAGES} pages besides START")
     size = len(json.dumps(layout, separators=(",", ":"), ensure_ascii=False).encode())
     if size > MAX_LAYOUT_BYTES:
         raise LayoutError(f"layout has {size} bytes, the panel takes {MAX_LAYOUT_BYTES}")
@@ -63,16 +104,21 @@ class _VersionedStore(Store[dict[str, Any]]):
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
     ) -> dict[str, Any]:
+        data = old_data
         if old_major_version == 1:
             # 0.6: one layout per panel. Each becomes its own configuration.
             configs, panels = {}, {}
-            for panel_id, entry in old_data.get("panels", {}).items():
+            for panel_id, entry in data.get("panels", {}).items():
                 layout = dict(entry["layout"])
                 rotate = bool(layout.pop("rotate_180", False))
                 configs[panel_id] = {"name": f"Panel {panel_id[-6:]}", "layout": layout}
                 panels[panel_id] = {"config": panel_id, "rotate_180": rotate}
-            return {"password": old_data.get("password", ""), "configs": configs, "panels": panels}
-        return old_data
+            data = {"password": data.get("password", ""), "configs": configs, "panels": panels}
+        if old_major_version <= 2:
+            # 0.7: the fixed PRESETS page becomes an own page.
+            for config in data.get("configs", {}).values():
+                config["layout"] = convert_presets(config["layout"])
+        return data
 
 
 class LayoutStore:

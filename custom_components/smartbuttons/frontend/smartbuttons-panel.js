@@ -234,8 +234,9 @@ const HOST=typeof EDITOR_HOST!=='undefined'?EDITOR_HOST:{
     return 'Gespeichert, das Panel startet neu.';
   },
 };
-let cfg={name:'',screensaver_sec:300,buttons:[],presets:{entity_id:'',scenes:[]}};
-let page='start',sel=0,lamp=null,heat=null;
+let cfg={name:'',screensaver_sec:300,buttons:[],pages:[]};
+// view: 'page' (START = pg 0, own pages 1..), or a fixed page 'lamp', 'heat', 'rgb' of the cell ref.
+let view='page',pg=0,sel=0,ref=null;
 
 // ── Pixel drawing, same layout as the firmware ──
 function canvas(){return Array.from({length:32},()=>new Uint8Array(64));}
@@ -270,29 +271,41 @@ const EMPTY=()=>({c:canvas(),color:'aus',fixed:true});
 const fixed=o=>Object.assign(o,{fixed:true});
 
 // ── Pages ──
+const MAX_PAGES=8;
 function domain(e){return (e||'').split('.')[0];}
+function cellsOf(p){return p===0?cfg.buttons:(cfg.pages[p-1].buttons=cfg.pages[p-1].buttons||[]);}
+function btnAt(p,i){return cellsOf(p).find(b=>b.id===i);}
+function btn(i){return btnAt(pg,i);}
+function refBtn(){return ref?btnAt(ref.pg,ref.id):null;}
+function allCells(){const out=[];for(let p=0;p<=cfg.pages.length;p++)for(const b of cellsOf(p))out.push([p,b]);return out;}
+function pageName(n){const p=cfg.pages[n-1];return p?p.name:'?';}
+// Icon and color of the cell types without entity state, same defaults as the firmware.
+const TYPE_LOOK={page:['DOTS','gruen'],back:['BACK','weiss'],brighter:['SUN','gelb'],darker:['SUN_SMALL','dunkelrot'],rgb:['RGB','cyan'],light:['HEART','magenta']};
 function autoIcon(b){
   if(b.icon)return b.icon.toUpperCase();
-  if(b.page==='presets')return 'DOTS';
+  if(TYPE_LOOK[b.type])return TYPE_LOOK[b.type][0];
   const d=domain(b.entity_id);
   return d==='light'?'BULB':d==='climate'?'RADIATOR':d==='scene'||d==='script'?'HEART':'POWER';
 }
-function btn(i){return cfg.buttons.find(b=>b.id===i);}
-function startCell(i){
+function pageCell(i){
   const b=btn(i);
   if(!b)return {c:canvas(),color:'aus'};
+  if(TYPE_LOOK[b.type]){
+    const on=b.color_on||TYPE_LOOK[b.type][1];
+    const label=b.type==='page'&&!b.label?pageName(b.page):b.label;
+    return cell(autoIcon(b),label,b.type==='light'?(b.color_off||on):on);
+  }
   const on=$('pvOn').checked,d=domain(b.entity_id);
-  if(b.page==='presets')return cell(autoIcon(b),b.label,b.color_on||'gruen');
   let label=b.label,color=on?(b.color_on||'gruen'):(b.color_off||'grau');
   if(d==='scene'||d==='script')color=b.color_off||'grau';
   if(d==='climate')label=(b.heat_presets&&b.heat_presets[0]||22)+'°';
   return cell(autoIcon(b),label,color);
 }
-function favCells(favs,hasLamp){
+function favCells(favs){
   const out=Array.from({length:10},EMPTY);
   FAV_SLOTS.forEach((s,i)=>{const f=favs[i];out[s]=f&&f.label?cell('HEART',f.label,'magenta'):{c:canvas(),color:'aus'};out[s].fav=i;});
-  if(hasLamp){out[3]=fixed(cell('SUN','','gelb'));out[4]=fixed(cell('POWER','','gruen'));
-    out[7]=fixed(cell('RGB','RGB','cyan'));out[8]=fixed(cell('SUN_SMALL','','dunkelrot'));}
+  out[3]=fixed(cell('SUN','','gelb'));out[4]=fixed(cell('POWER','','gruen'));
+  out[7]=fixed(cell('RGB','RGB','cyan'));out[8]=fixed(cell('SUN_SMALL','','dunkelrot'));
   out[9]=fixed(cell('BACK','','weiss'));
   return out;
 }
@@ -316,11 +329,10 @@ function heatCells(b){
   return o;
 }
 function currentCells(){
-  if(page==='presets')return favCells(cfg.presets.scenes||[],!!cfg.presets.entity_id);
-  if(page==='lamp')return favCells((btn(lamp)||{}).favs||[],true);
-  if(page==='rgb')return rgbCells();
-  if(page==='heat')return heatCells(btn(heat));
-  return Array.from({length:10},(_,i)=>startCell(i));
+  if(view==='lamp')return favCells((refBtn()||{}).favs||[]);
+  if(view==='rgb')return rgbCells();
+  if(view==='heat')return heatCells(refBtn());
+  return Array.from({length:10},(_,i)=>pageCell(i));
 }
 
 // ── Rendering ──
@@ -334,15 +346,33 @@ function paint(el,{c,color}){
   ctx.putImageData(img,0,0);
 }
 function renderTabs(){
-  const tabs=[['start','START'],['presets','PRESETS']];
-  cfg.buttons.filter(b=>domain(b.entity_id)==='light').forEach(b=>tabs.push(['lamp:'+b.id,'Lampe: '+b.label]));
-  cfg.buttons.filter(b=>domain(b.entity_id)==='climate').forEach(b=>tabs.push(['heat:'+b.id,'Heizung: '+b.label]));
+  const tabs=[['page:0','START']];
+  cfg.pages.forEach((p,i)=>tabs.push(['page:'+(i+1),p.name||'SEITE '+(i+1)]));
+  for(const [p,b] of allCells()){
+    if(b.type)continue;
+    const d=domain(b.entity_id),name=b.label||b.entity_id;
+    if(d==='light')tabs.push([`lamp:${p}:${b.id}`,'Lampe: '+name]);
+    if(d==='climate')tabs.push([`heat:${p}:${b.id}`,'Heizung: '+name]);
+  }
   tabs.push(['rgb','RGB']);
-  const cur=page==='lamp'?'lamp:'+lamp:page==='heat'?'heat:'+heat:page;
-  $('tabs').replaceChildren(...tabs.map(([k,l])=>{
+  const cur=view==='page'?'page:'+pg:view==='rgb'?'rgb':`${view}:${ref.pg}:${ref.id}`;
+  const buttons=tabs.map(([k,l])=>{
     const t=document.createElement('button');t.className='tab'+(k===cur?' on':'');t.textContent=l;
-    t.onclick=()=>{const[p,id]=k.split(':');page=p;if(p==='lamp')lamp=+id;if(p==='heat')heat=+id;sel=p==='start'?0:FAV_SLOTS[0];render();};
-    return t;}));
+    t.onclick=()=>{
+      const [v,a,b]=k.split(':');view=v;
+      if(v==='page'){pg=+a;sel=0;}else if(v!=='rgb'){ref={pg:+a,id:+b};sel=FAV_SLOTS[0];}
+      render();
+    };
+    return t;});
+  if(cfg.pages.length<MAX_PAGES){
+    const add=document.createElement('button');add.textContent='+ Seite';
+    add.onclick=()=>{
+      cfg.pages.push({name:'SEITE '+(cfg.pages.length+1),buttons:[{id:9,type:'back'}]});
+      view='page';pg=cfg.pages.length;sel=0;render();
+    };
+    buttons.push(add);
+  }
+  $('tabs').replaceChildren(...buttons);
 }
 function render(){
   renderTabs();
@@ -360,18 +390,15 @@ function render(){
 // ── Moving cells ──
 // Pointer events instead of HTML5 drag and drop, so it also works on a phone.
 function canMove(cells,i){
-  if(page==='start')return !!btn(i);
-  return cells[i].fav!==undefined&&!!(favList()[cells[i].fav]||{}).label;
+  if(view==='page')return !!btn(i);
+  return view==='lamp'&&cells[i].fav!==undefined&&!!(favList()[cells[i].fav]||{}).label;
 }
 function canDrop(cells,i){
-  return page==='start'||cells[i].fav!==undefined;
+  return view==='page'||(view==='lamp'&&cells[i].fav!==undefined);
 }
-function favList(){
-  if(page==='presets')return cfg.presets.scenes=cfg.presets.scenes||[];
-  const b=btn(lamp);return b.favs=b.favs||[];
-}
+function favList(){const b=refBtn();return b.favs=b.favs||[];}
 function moveCell(cells,from,to){
-  if(page==='start'){
+  if(view==='page'){
     const a=btn(from),b=btn(to);
     a.id=to;if(b)b.id=from;
   }else{
@@ -484,49 +511,85 @@ function note(parent,t){const p=document.createElement('p');p.className='hint';p
 function heading(parent,t){const h=document.createElement('h2');h.textContent=t;parent.append(h);}
 function renderForm(cells){
   const f=$('form');f.replaceChildren();
-  if(page==='start')return startForm(f);
-  if(page==='presets'){
-    heading(f,'PRESETS');
-    field(f,'Licht für Helligkeit, an/aus, RGB',cfg.presets.entity_id,v=>{cfg.presets.entity_id=v.trim();},{placeholder:'light.alle (Lampe oder Lichtgruppe)',valid:isEntity,domains:['light']});
-    if(cells[sel].fav!==undefined)favForm(f,cfg.presets.scenes=cfg.presets.scenes||[],cells[sel].fav,false);
+  if(view==='page'){if(pg>0)pageHeader(f);return cellForm(f);}
+  if(view==='lamp'){
+    const b=refBtn();heading(f,'Lampenseite: '+(b.label||b.entity_id));
+    note(f,'Öffnet sich, wenn die Lampe lang gedrückt wird.');
+    if(cells[sel].fav!==undefined)favForm(f,b.favs=b.favs||[],cells[sel].fav);
     else note(f,'Feste Funktion. Favoriten liegen auf SW1, SW2, SW6, SW7 und SW3.');
     return;
   }
-  if(page==='lamp'){
-    const b=btn(lamp);heading(f,'Lampenseite: '+b.label);
-    note(f,'Öffnet sich, wenn die Lampe auf START lang gedrückt wird.');
-    if(cells[sel].fav!==undefined)favForm(f,b.favs=b.favs||[],cells[sel].fav,true);
-    else note(f,'Feste Funktion. Favoriten liegen auf SW1, SW2, SW6, SW7 und SW3.');
-    return;
-  }
-  if(page==='heat'){
-    const b=btn(heat);heading(f,'Heizung: '+b.label);heatFields(f,b);note(f,'Die Vorschau zeigt Beispielwerte, das Panel die echten.');return;
+  if(view==='heat'){
+    const b=refBtn();heading(f,'Heizung: '+(b.label||b.entity_id));heatFields(f,b);note(f,'Die Vorschau zeigt Beispielwerte, das Panel die echten.');return;
   }
   note(f,'Die RGB-Seite ist fest und gilt für die Lampe, von der aus sie geöffnet wird.');
 }
+function pageHeader(f){
+  const p=cfg.pages[pg-1];
+  heading(f,'Seite '+pg);
+  field(f,'Name',p.name,v=>{p.name=v;renderTabs();},{maxLength:10});
+  const links=allCells().filter(([,b])=>b.type==='page'&&b.page===pg).length;
+  note(f,links?'Zurück führt zur Seite davor. Nach 60 s ohne Tastendruck geht das Panel auf START.'
+              :'Noch öffnet keine Zelle diese Seite: auf einer anderen Seite eine Zelle „Seite öffnen“ anlegen.');
+  const del=document.createElement('button');del.textContent='Seite löschen';
+  del.onclick=()=>{
+    // Links to this page disappear, links to later pages move up by one.
+    for(let p=0;p<=cfg.pages.length;p++){
+      if(p===pg)continue;
+      const list=cellsOf(p);
+      for(let k=list.length-1;k>=0;k--){
+        const b=list[k];
+        if(b.type!=='page')continue;
+        if(b.page===pg)list.splice(k,1);else if(b.page>pg)b.page--;
+      }
+    }
+    cfg.pages.splice(pg-1,1);pg=0;sel=0;render();
+  };
+  f.append(del);
+}
+const TYPES=[['','leer'],['light','Lampe'],['device','Schalter / Gerät'],['scene','Szene / Skript'],['climate','Heizung'],
+  ['page','Seite öffnen'],['back','Zurück'],['brighter','Heller'],['darker','Dunkler'],['rgb','RGB-Seite'],['lightset','Lichtfarbe']];
+const LIGHT_TYPES=['brighter','darker','rgb','lightset'];
 function typeOf(b){
   if(!b)return '';
-  if(b.page==='presets')return 'presets';
+  if(b.type==='light')return 'lightset';
+  if(b.type)return b.type;
   return {light:'light',climate:'climate',scene:'scene',script:'scene'}[domain(b.entity_id)]||'device';
 }
-function startForm(f){
-  const i=sel;let b=btn(i);
+function setType(b,v){
+  const lamp=domain(b.entity_id)==='light'?b.entity_id:'light.';
+  for(const k of Object.keys(b))if(k!=='id'&&k!=='label')delete b[k];
+  if(v==='page'){b.type='page';b.page=1;}
+  else if(v==='back')b.type='back';
+  else if(LIGHT_TYPES.includes(v)){b.type=v==='lightset'?'light':v;b.entity_id=lamp;if(v==='lightset')b.data={rgb_color:[255,0,128]};}
+  else b.entity_id={light:'light.',climate:'climate.',scene:'scene.',device:'switch.'}[v];
+}
+function cellForm(f){
+  const i=sel,list=cellsOf(pg);let b=btn(i);
   heading(f,'SW'+(i+1));
-  if(i===9)note(f,'SW10 lang drücken öffnet immer den Debug-Screen, Favoriten sind hier nicht erreichbar.');
+  if(i===9&&pg===0)note(f,'SW10 lang drücken öffnet auf START immer den Debug-Screen, Favoriten sind hier nicht erreichbar.');
   field(f,'Typ',typeOf(b),v=>{
-    if(!v){cfg.buttons=cfg.buttons.filter(x=>x.id!==i);return;}
-    if(!b){b={id:i,label:'',entity_id:''};cfg.buttons.push(b);}
-    delete b.page;
-    if(v==='presets'){b.page='presets';delete b.entity_id;if(!b.label)b.label='PRESETS';}
-    else if(typeOf(b)!==v)b.entity_id={light:'light.',climate:'climate.',scene:'scene.',device:'switch.'}[v];
-  },{options:[['','leer'],['light','Lampe'],['device','Schalter / Gerät'],['scene','Szene / Skript'],['climate','Heizung'],['presets','Link zu PRESETS']]});
+    if(!v){list.splice(list.indexOf(b),1);return;}
+    if(!b){b={id:i,label:''};list.push(b);}
+    if(typeOf(b)!==v)setType(b,v);
+  },{options:TYPES});
   if(!b)return;
-  field(f,'Beschriftung',b.label,v=>{b.label=v;},{maxLength:10});
-  if(b.page!=='presets')field(f,'Entität',b.entity_id,v=>{b.entity_id=v.trim();renderTabs();},{placeholder:'light.wohnzimmer',valid:isEntity,domains:ENTITY_DOMAINS[typeOf(b)]});
-  field(f,'Icon',b.icon||'',v=>{if(v)b.icon=v;else delete b.icon;},{options:ICONS});
-  field(f,'Farbe an',b.color_on||'gruen',v=>{b.color_on=v;},{options:colorOpts});
-  if(b.page!=='presets')field(f,'Farbe aus',b.color_off||'grau',v=>{b.color_off=v;},{options:colorOpts});
   const t=typeOf(b);
+  field(f,'Beschriftung',b.label,v=>{b.label=v;},{maxLength:10,placeholder:t==='page'?'leer = Name der Seite':''});
+  if(t==='page'){
+    if(!cfg.pages.length)note(f,'Noch keine eigene Seite: oben „+ Seite“.');
+    else field(f,'Seite',String(b.page),v=>{b.page=+v;},{options:cfg.pages.map((p,k)=>[String(k+1),p.name])});
+  }
+  if(t!=='page'&&t!=='back'){
+    const domains=LIGHT_TYPES.includes(t)?['light']:ENTITY_DOMAINS[t];
+    field(f,LIGHT_TYPES.includes(t)?'Licht':'Entität',b.entity_id,v=>{b.entity_id=v.trim();renderTabs();},
+          {placeholder:'light.wohnzimmer',valid:isEntity,domains});
+  }
+  if(t==='lightset')lightData(f,b);
+  field(f,'Icon',b.icon||'',v=>{if(v)b.icon=v;else delete b.icon;},{options:ICONS});
+  const look=TYPE_LOOK[b.type];
+  field(f,'Farbe an',b.color_on||(look?look[1]:'gruen'),v=>{b.color_on=v;},{options:colorOpts});
+  if(!look||b.type==='light')field(f,'Farbe aus',b.color_off||(look?look[1]:'grau'),v=>{b.color_off=v;},{options:colorOpts});
   if(t==='climate')heatFields(f,b);
   if(t==='scene'){
     heading(f,'Zustandsabhängig (optional)');
@@ -536,7 +599,21 @@ function startForm(f){
     field(f,'Szene',a.entity_id,v=>{a.entity_id=v.trim();sync();},{valid:isEntity,placeholder:'scene.kommen',domains:['scene','script']});
     field(f,'Zustand',a.state_entity,v=>{a.state_entity=v.trim();sync();},{valid:isEntity,placeholder:'input_boolean.zuhause',domains:['input_boolean','binary_sensor','switch']});
   }
-  if(t==='light')note(f,'Favoriten dieser Lampe: Tab „Lampe“ oben.');
+  if(t==='light')note(f,'Favoriten dieser Lampe: Tab „Lampe“ oben, lang drücken öffnet sie.');
+  if(t==='lightset')note(f,'Setzt das Licht auf diese Farbe. Leuchtet nach dem Drücken 3 s in „Farbe an“.');
+}
+// Color or color temperature of a "Lichtfarbe" cell or a lamp favorite.
+function lightData(f,o){
+  const kind=o.data&&o.data.color_temp_kelvin?'kelvin':'rgb';
+  field(f,'Art',kind,v=>{o.data=v==='kelvin'?{color_temp_kelvin:2700}:{rgb_color:[255,0,128]};},
+        {options:[['rgb','Farbe'],['kelvin','Farbtemperatur']]});
+  if(kind==='rgb'){
+    o.data=o.data&&o.data.rgb_color?o.data:{rgb_color:[255,0,128]};
+    const toHex=a=>'#'+a.map(v=>v.toString(16).padStart(2,'0')).join('');
+    field(f,'Farbe',toHex(o.data.rgb_color),v=>{o.data.rgb_color=[1,3,5].map(k=>parseInt(v.substr(k,2),16));},{type:'color'});
+  }else{
+    field(f,'Kelvin',o.data.color_temp_kelvin,v=>{o.data.color_temp_kelvin=Number(v);},{type:'number',placeholder:'2700'});
+  }
 }
 function heatFields(f,b){
   const p=b.heat_presets=b.heat_presets||[];
@@ -545,37 +622,47 @@ function heatFields(f,b){
   field(f,'Preset 2 (°C)',p[1],v=>{p[1]=num(v);},{type:'number'});
   field(f,'Fensterkontakt',b.window_entity,v=>{if(v.trim())b.window_entity=v.trim();else delete b.window_entity;},{valid:isEntity,placeholder:'binary_sensor.fenster',domains:['binary_sensor']});
 }
-function favForm(f,favs,i,lampPage){
+function favForm(f,favs,i){
   while(favs.length<=i)favs.push({});
   const fav=favs[i];
   heading(f,'Favorit '+(i+1));
   field(f,'Beschriftung',fav.label,v=>{fav.label=v;},{maxLength:10});
-  const kind=fav.entity_id!==undefined?'scene':fav.data&&fav.data.color_temp_kelvin?'kelvin':fav.data&&fav.data.rgb_color?'rgb':(lampPage?'rgb':'scene');
+  const kind=fav.entity_id!==undefined?'scene':'light';
   field(f,'Art',kind,v=>{
     delete fav.entity_id;delete fav.data;
-    if(v==='scene')fav.entity_id='scene.';
-    if(v==='rgb')fav.data={rgb_color:[255,0,128]};
-    if(v==='kelvin')fav.data={color_temp_kelvin:2700};
-  },{options:[['scene','Szene'],['rgb','Farbe für das Licht'],['kelvin','Farbtemperatur für das Licht']]});
+    if(v==='scene')fav.entity_id='scene.';else fav.data={rgb_color:[255,0,128]};
+  },{options:[['light','Farbe für das Licht'],['scene','Szene']]});
   if(kind==='scene')field(f,'Szene',fav.entity_id,v=>{fav.entity_id=v.trim();},{valid:isEntity,placeholder:'scene.abend',domains:['scene','script']});
-  if(kind==='rgb'){
-    fav.data=fav.data||{rgb_color:[255,0,128]};
-    const toHex=a=>'#'+a.map(v=>v.toString(16).padStart(2,'0')).join('');
-    field(f,'Farbe',toHex(fav.data.rgb_color),v=>{fav.data.rgb_color=[1,3,5].map(o=>parseInt(v.substr(o,2),16));},{type:'color'});
-  }
-  if(kind==='kelvin'){
-    fav.data=fav.data||{color_temp_kelvin:2700};
-    field(f,'Kelvin',fav.data.color_temp_kelvin,v=>{fav.data.color_temp_kelvin=Number(v);},{type:'number',placeholder:'2700'});
-  }
+  else lightData(f,fav);
 }
 
 // ── Load, save ──
 const COLOR_BY_VALUE=Object.fromEntries(Object.entries(COLOR_VALUE).map(([k,v])=>[v,k]));
+// Before v0.8 there was one fixed PRESETS page. It becomes an own page, the START cell with
+// "page": "presets" links to it. Same as convert_presets() in HA and the firmware.
+function convertPresets(c){
+  const presets=c.presets||{};delete c.presets;
+  const link=c.buttons.find(b=>b.page==='presets');
+  if(!link)return;
+  if(c.pages.length>=MAX_PAGES){delete link.page;return;}
+  const lamp=presets.entity_id||'',cells=[];
+  (presets.scenes||[]).slice(0,5).forEach((fav,k)=>{
+    if(!fav.label||!(fav.entity_id||lamp))return;
+    const cl={id:FAV_SLOTS[k],label:fav.label,icon:'heart',color_on:'magenta',color_off:'magenta'};
+    if(fav.entity_id)cl.entity_id=fav.entity_id;else Object.assign(cl,{type:'light',entity_id:lamp,data:fav.data||{}});
+    cells.push(cl);
+  });
+  if(lamp)cells.push({id:3,type:'brighter',entity_id:lamp},{id:4,entity_id:lamp,icon:'power',color_on:'gruen',color_off:'dunkelrot'},
+                     {id:7,type:'rgb',entity_id:lamp,label:'RGB'},{id:8,type:'darker',entity_id:lamp});
+  cells.push({id:9,type:'back'});
+  c.pages.push({name:'PRESETS',buttons:cells.sort((a,b)=>a.id-b.id)});
+  link.type='page';link.page=c.pages.length;
+}
 function normalize(c){
-  c.buttons=c.buttons||[];
-  c.presets=c.presets||{entity_id:'',scenes:[]};
-  c.presets.scenes=c.presets.scenes||[];
-  for(const b of c.buttons){
+  c.buttons=c.buttons||[];c.pages=c.pages||[];
+  convertPresets(c);
+  for(const p of c.pages)p.buttons=p.buttons||[];
+  for(const list of [c.buttons,...c.pages.map(p=>p.buttons)])for(const b of list){
     delete b.font_type;
     for(const k of ['color_on','color_off'])if(typeof b[k]==='number')b[k]=COLOR_BY_VALUE[b[k]]||'weiss';
   }
@@ -584,28 +671,30 @@ function normalize(c){
 function cleaned(){
   const out=JSON.parse(JSON.stringify(cfg));
   const favs=a=>(a||[]).map(f=>f.label?f:{});
-  for(const b of out.buttons){
-    if(b.favs){b.favs=favs(b.favs);if(!b.favs.some(f=>f.label))delete b.favs;}
-    if(b.heat_presets){b.heat_presets=b.heat_presets.map(v=>v||0);if(!b.heat_presets.some(v=>v))delete b.heat_presets;}
+  for(const list of [out.buttons,...out.pages.map(p=>p.buttons)]){
+    for(const b of list){
+      if(b.favs){b.favs=favs(b.favs);if(!b.favs.some(f=>f.label))delete b.favs;}
+      if(b.heat_presets){b.heat_presets=b.heat_presets.map(v=>v||0);if(!b.heat_presets.some(v=>v))delete b.heat_presets;}
+    }
+    list.sort((a,b)=>a.id-b.id);
   }
-  out.buttons.sort((a,b)=>a.id-b.id);
-  out.presets.scenes=favs(out.presets.scenes);
   return out;
 }
 function problems(){
   const out=[];
-  for(const b of cfg.buttons){
-    if(b.page==='presets')continue;
-    if(!isEntity(b.entity_id||''))out.push('SW'+(b.id+1)+': Entität ungültig');
+  for(const [p,b] of allCells()){
+    const where=(p?pageName(p):'START')+' SW'+(b.id+1);
+    if(b.type==='page'){if(!cfg.pages[b.page-1])out.push(where+': Seite fehlt');continue;}
+    if(b.type==='back')continue;
+    if(!isEntity(b.entity_id||''))out.push(where+': Entität ungültig');
   }
-  if(cfg.presets.entity_id&&!isEntity(cfg.presets.entity_id))out.push('PRESETS: Licht ungültig');
   return out;
 }
 function msg(t,cls){$('msg').textContent=t;$('msg').className=cls||'';}
 function apply(c){
   cfg=normalize(c);
   $('name').value=cfg.name||'';$('ss').value=cfg.screensaver_sec??300;$('rot').checked=!!cfg.rotate_180;
-  page='start';sel=0;render();
+  view='page';pg=0;sel=0;ref=null;render();
 }
 $('name').oninput=e=>{cfg.name=e.target.value.trim();};
 $('ss').oninput=e=>{cfg.screensaver_sec=Number(e.target.value);};
