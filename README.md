@@ -13,11 +13,14 @@ Voraussetzung: Panel-Firmware ab v0.6.0, Home Assistant ab 2025.1.
 
 ## Installation
 
-1. Ordner `custom_components/smartbuttons/` nach `<HA-config>/custom_components/smartbuttons/` kopieren.
-2. Home Assistant neu starten.
-3. Gefundene Panels unter Einstellungen → Geräte & Dienste hinzufügen.
+**Mit HACS:** HACS → Integrationen → ⋮ → Benutzerdefinierte Repositories →
+`https://github.com/snoofx/ha-smartbuttons`, Typ „Integration“. Dann „SmartButtons“ installieren und
+Home Assistant neu starten.
 
-HACS unterstützt nur Repositories auf GitHub, dieses liegt auf GitLab.
+**Ohne HACS:** Ordner `custom_components/smartbuttons/` nach `<HA-config>/custom_components/smartbuttons/`
+kopieren und Home Assistant neu starten.
+
+Danach erscheinen gefundene Panels unter Einstellungen → Geräte & Dienste.
 
 ## Panel zurücksetzen
 
