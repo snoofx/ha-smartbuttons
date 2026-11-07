@@ -23,12 +23,12 @@
     },
     "error": {
       "cannot_connect": "Panel nicht erreichbar. Läuft Firmware ab v0.6.0?",
-      "adopt_failed": "Das Panel hat die Umstellung nicht bestätigt. Passwort falsch?"
+      "adopt_failed": "Das Panel hat die Umstellung nicht bestätigt. Ist das Passwort aus seiner Web-UI richtig? Sonst am Panel zurücksetzen: SW10 auf START lang drücken (Debug-Screen), dann SW6 „RESET“ lang."
     },
     "abort": {
       "already_configured": "Panel ist schon eingerichtet.",
       "not_smartbuttons": "Kein SmartButtons-Panel.",
-      "paired_elsewhere": "Das Panel ist mit einem anderen Home Assistant gekoppelt. Am Panel SW6 und SW10 beim Einschalten 5 Sekunden halten, dann erneut hinzufügen.",
+      "paired_elsewhere": "Das Panel ist mit einem anderen Home Assistant gekoppelt. Am Panel zurücksetzen: SW10 auf START lang drücken (Debug-Screen), dann SW6 „RESET“ lang. Danach erneut hinzufügen.",
       "cannot_connect": "Panel nicht erreichbar."
     }
   },

@@ -288,8 +288,8 @@ class PanelLink:
         elif kind == "auth_failed":
             if not self.auth_failed:
                 _LOGGER.error(
-                    "%s is paired with another Home Assistant. Hold SW6 and SW10 for 5 s while it "
-                    "starts to clear its pairing, then it pairs with this one",
+                    "%s is paired with another Home Assistant. Reset it on the panel (debug screen: long "
+                    "press SW10 on START, then SW6), then it pairs with this one",
                     self.name,
                 )
             self.auth_failed = True

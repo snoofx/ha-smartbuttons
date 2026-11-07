@@ -26,7 +26,8 @@ Danach erscheinen gefundene Panels unter Einstellungen → Geräte & Dienste.
 
 ## Panel zurücksetzen
 
-SW6 und SW10 beim Einschalten 5 Sekunden halten. Das löscht Kopplung und Passwort.
+Am Panel SW10 auf START lang drücken (Debug-Screen), dann SW6 „RESET“ lang. Oder SW6 und SW10 während
+des Starts 5 Sekunden halten. Das löscht Kopplung und Passwort, WLAN und Belegung bleiben.
 
 Entwickelt wird die Integration zusammen mit der Firmware in einem eigenen Repo. Dieses hier
 enthält nur die veröffentlichte Integration.

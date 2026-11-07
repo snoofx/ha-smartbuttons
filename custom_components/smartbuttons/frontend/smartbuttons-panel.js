@@ -38,7 +38,7 @@ function haHost(panel) {
   let ui, panels = [], configs = [], currentConfig = null;
   const cards = {};
 
-  const status = p => p.auth_failed ? ['bad', 'mit anderem HA gekoppelt: SW6+SW10 beim Start halten']
+  const status = p => p.auth_failed ? ['bad', 'mit anderem HA gekoppelt: am Panel Debug-Screen → SW6 RESET']
     : p.mode === 'local' ? ['', 'lokal verwaltet'] : p.connected ? ['on', 'verbunden'] : ['', 'offline'];
 
   async function refresh() {

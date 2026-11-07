@@ -23,12 +23,12 @@
     },
     "error": {
       "cannot_connect": "Panel not reachable. Does it run firmware v0.6.0 or later?",
-      "adopt_failed": "The panel did not confirm the switch. Wrong password?"
+      "adopt_failed": "The panel did not confirm the switch. Is the password from its web UI right? Otherwise reset it on the panel: long press SW10 on START (debug screen), then long press SW6 \"RESET\"."
     },
     "abort": {
       "already_configured": "Panel is already set up.",
       "not_smartbuttons": "Not a SmartButtons panel.",
-      "paired_elsewhere": "The panel is paired with another Home Assistant. Hold SW6 and SW10 for 5 seconds while it powers on, then add it again.",
+      "paired_elsewhere": "The panel is paired with another Home Assistant. Reset it on the panel: long press SW10 on START (debug screen), then long press SW6 \"RESET\". Then add it again.",
       "cannot_connect": "Panel not reachable."
     }
   },
