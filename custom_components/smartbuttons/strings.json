@@ -1,0 +1,38 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Add SmartButtons panel",
+        "description": "Home Assistant usually finds panels by itself. Use this only if it does not.",
+        "data": {
+          "host": "IP address or hostname"
+        }
+      },
+      "confirm": {
+        "title": "SmartButtons panel",
+        "description": "Add panel **{name}** ({host})?"
+      },
+      "confirm_local": {
+        "title": "SmartButtons panel",
+        "description": "Panel **{name}** ({host}) is managed locally. Adding it switches it to Home Assistant and restarts it. Pages and entities are taken over, the token on the panel is no longer used."
+      }
+    },
+    "error": {
+      "cannot_connect": "Panel not reachable. Does it run firmware v0.6.0 or later?",
+      "adopt_failed": "The panel did not confirm the switch."
+    },
+    "abort": {
+      "already_configured": "Panel is already set up.",
+      "not_smartbuttons": "Not a SmartButtons panel.",
+      "paired_elsewhere": "The panel is paired with another Home Assistant. Hold SW6 and SW10 for 5 seconds while it powers on, then add it again."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connected": {
+        "name": "Connection"
+      }
+    }
+  }
+}

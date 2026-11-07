@@ -1,0 +1,347 @@
+"""Connection from Home Assistant to one panel.
+
+HA connects to the panel (ws://<panel>:81/). The panel says hello with its id, layout revision
+and the entities it shows. HA answers with the layout if the panel's one is outdated, otherwise
+with "welcome" and the states, and from then on relays state changes and service calls. The
+messages are the same as the HA WebSocket API, so the firmware handles both transports alike.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import json
+import logging
+from typing import Any
+
+import aiohttp
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_ENTITY_ID, CONF_HOST, __version__ as HA_VERSION
+from homeassistant.core import Context, Event, EventStateChangedData, HomeAssistant, State, callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.json import json_dumps
+
+from .const import (
+    CONF_LINK_KEY,
+    DOMAIN,
+    EVENT_BUTTON_PRESSED,
+    FORWARDED_ATTRIBUTES,
+    LINK_PORT,
+    SIGNAL_PANEL_UPDATED,
+)
+from .store import LayoutError, LayoutStore, clean_layout, layout_entities
+
+_LOGGER = logging.getLogger(__name__)
+
+CONNECT_TIMEOUT = 10
+RETRY_MIN = 2
+RETRY_MAX = 60
+MAX_MESSAGE = 64 * 1024
+
+
+def state_payload(state: State | None) -> dict[str, Any]:
+    """A state in the compressed form of subscribe_entities, only what the panel shows."""
+    if state is None:
+        return {"s": "unavailable", "a": {}}
+    attrs = {k: state.attributes[k] for k in FORWARDED_ATTRIBUTES if k in state.attributes}
+    return {"s": state.state, "a": attrs}
+
+
+async def async_read_hello(hass: HomeAssistant, host: str) -> dict[str, Any]:
+    """Connects once and returns the panel's hello. Raises on failure."""
+    session = async_get_clientsession(hass)
+    async with asyncio.timeout(CONNECT_TIMEOUT):
+        async with session.ws_connect(f"ws://{host}:{LINK_PORT}/", max_msg_size=MAX_MESSAGE) as ws:
+            msg = await ws.receive()
+            hello = json.loads(msg.data) if msg.type == aiohttp.WSMsgType.TEXT else {}
+            if hello.get("type") != "hello" or not hello.get("id"):
+                raise ValueError("no SmartButtons panel")
+            return hello
+
+
+def link_proof(key: str, nonce: str) -> str:
+    """Answer to the nonce of a hello: HMAC-SHA256 with the pairing key."""
+    return hmac.new(bytes.fromhex(key), nonce.encode(), hashlib.sha256).hexdigest()
+
+
+async def async_adopt(hass: HomeAssistant, host: str, key: str) -> None:
+    """Switches a locally managed, unpaired panel to Home Assistant and pairs it. It restarts."""
+    session = async_get_clientsession(hass)
+    async with asyncio.timeout(CONNECT_TIMEOUT):
+        async with session.ws_connect(f"ws://{host}:{LINK_PORT}/", max_msg_size=MAX_MESSAGE) as ws:
+            await ws.receive()  # hello
+            await ws.send_str(json_dumps({"type": "adopt", "key": key}))
+            reply = await ws.receive()
+            if reply.type != aiohttp.WSMsgType.TEXT or json.loads(reply.data).get("type") != "adopted":
+                raise ValueError("panel did not switch to Home Assistant")
+
+
+class PanelLink:
+    """Keeps the connection to one panel and relays between it and HA."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, store: LayoutStore) -> None:
+        self.hass = hass
+        self.entry = entry
+        self.store = store
+        self.panel_id: str = entry.unique_id or ""
+        self.host: str = entry.data[CONF_HOST]
+        self._key: str = entry.data[CONF_LINK_KEY]
+        self.auth_failed = False  # the panel is paired with another HA
+        self.name: str = entry.title
+        self.mode: str | None = None  # "ha" or "local", from the last hello
+        self.version: str | None = None
+        self.connected = False  # welcomed: states and calls flow
+        self.device_id: str | None = None
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._unsub_states: Any = None
+        self._allowed: set[str] = set()
+        self._warned: set[str] = set()
+
+    # ── Status ──
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "entry_id": self.entry.entry_id,
+            "id": self.panel_id,
+            "name": self.name,
+            "host": self.host,
+            "mode": self.mode,
+            "version": self.version,
+            "connected": self.connected,
+            "auth_failed": self.auth_failed,
+        }
+
+    @callback
+    def _set_connected(self, connected: bool) -> None:
+        if connected != self.connected:
+            self.connected = connected
+            async_dispatcher_send(self.hass, SIGNAL_PANEL_UPDATED.format(self.entry.entry_id))
+
+    # ── Connection ──
+
+    @callback
+    def start(self) -> None:
+        self.entry.async_create_background_task(self.hass, self._run(), f"{DOMAIN} {self.host}")
+
+    async def _run(self) -> None:
+        session = async_get_clientsession(self.hass)
+        delay = RETRY_MIN
+        while True:
+            try:
+                async with asyncio.timeout(CONNECT_TIMEOUT):
+                    ws = await session.ws_connect(
+                        f"ws://{self.host}:{LINK_PORT}/", heartbeat=30, max_msg_size=MAX_MESSAGE
+                    )
+                delay = RETRY_MIN
+                _LOGGER.debug("%s: connected", self.host)
+                try:
+                    await self._session(ws)
+                finally:
+                    await ws.close()
+            except (aiohttp.ClientError, TimeoutError, OSError) as err:
+                _LOGGER.debug("%s: connection failed: %s", self.host, err)
+            finally:
+                self._end_session()
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, RETRY_MAX)
+
+    async def _session(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        self._ws = ws
+        self._queue = asyncio.Queue()
+        sender = self.entry.async_create_background_task(
+            self.hass, self._sender(ws, self._queue), f"{DOMAIN} {self.host} sender"
+        )
+        try:
+            async for msg in ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    break
+                try:
+                    data = json.loads(msg.data)
+                except ValueError:
+                    _LOGGER.warning("%s: invalid message", self.host)
+                    continue
+                await self._handle(data)
+        finally:
+            sender.cancel()
+
+    @staticmethod
+    async def _sender(ws: aiohttp.ClientWebSocketResponse, queue: asyncio.Queue[str]) -> None:
+        # One writer keeps the order of state messages.
+        while True:
+            await ws.send_str(await queue.get())
+
+    @callback
+    def _send(self, message: dict[str, Any]) -> None:
+        if self._ws is not None:
+            self._queue.put_nowait(json_dumps(message))
+
+    @callback
+    def _end_session(self) -> None:
+        self._ws = None
+        if self._unsub_states:
+            self._unsub_states()
+            self._unsub_states = None
+        self._set_connected(False)
+
+    # ── Messages from the panel ──
+
+    async def _handle(self, data: dict[str, Any]) -> None:
+        kind = data.get("type")
+        if kind == "hello":
+            self._on_hello(data)
+        elif kind == "call_service":
+            self.entry.async_create_task(self.hass, self._on_call(data))
+        elif kind == "press":
+            self._on_press(data)
+        elif kind == "config_error":
+            _LOGGER.error("%s rejected its layout: %s", self.name, data.get("message"))
+        elif kind == "config_saved":
+            _LOGGER.info("%s took the new layout and restarts", self.name)
+        elif kind == "auth_failed":
+            if not self.auth_failed:
+                _LOGGER.error(
+                    "%s is paired with another Home Assistant. Hold SW6 and SW10 for 5 s while it "
+                    "starts to clear its pairing, then it pairs with this one",
+                    self.name,
+                )
+            self.auth_failed = True
+            async_dispatcher_send(self.hass, SIGNAL_PANEL_UPDATED.format(self.entry.entry_id))
+        elif kind == "paired":
+            _LOGGER.info("%s paired with this Home Assistant", self.name)
+
+    @callback
+    def _on_hello(self, hello: dict[str, Any]) -> None:
+        if self._unsub_states:
+            self._unsub_states()
+            self._unsub_states = None
+        self._set_connected(False)
+        self.mode = hello.get("mode")
+        self.version = hello.get("version")
+        self.update_device()
+
+        if not hello.get("paired"):
+            # Fresh or reset panel: it takes the key, then says hello again.
+            self._send({"type": "pair", "key": self._key})
+            return
+        self._send({"type": "auth", "hmac": link_proof(self._key, str(hello.get("nonce", "")))})
+        self.auth_failed = False
+
+        if self.mode != "ha":
+            _LOGGER.info("%s is managed locally, switch it in its web UI", self.name)
+            async_dispatcher_send(self.hass, SIGNAL_PANEL_UPDATED.format(self.entry.entry_id))
+            return
+
+        layout = self.store.get(self.panel_id)
+        if layout is None:
+            # First contact: HA takes over what the panel has, nothing gets lost.
+            try:
+                layout = clean_layout(hello.get("config") or {"buttons": []})
+            except LayoutError as err:
+                _LOGGER.warning("%s: layout of the panel not taken over: %s", self.name, err)
+                layout = {"buttons": []}
+            self.store.set(self.panel_id, layout)
+        rev = self.store.revision(self.panel_id)
+        if hello.get("rev") != rev:
+            self._send({"type": "config", "rev": rev, "config": layout})
+            return  # the panel restarts, or says hello again
+
+        self._allowed = layout_entities(layout)
+        watch = [e for e in hello.get("watch", []) if isinstance(e, str)]
+        self._send({"type": "password", "password": self.store.password})
+        self._send({"type": "welcome", "ha_version": HA_VERSION})
+        states = {}
+        for entity_id in watch:
+            state = self.hass.states.get(entity_id)
+            if state is None and entity_id not in self._warned:
+                self._warned.add(entity_id)
+                _LOGGER.warning("%s shows %s, which does not exist in HA", self.name, entity_id)
+            states[entity_id] = state_payload(state)
+        if states:
+            self._send({"type": "event", "event": {"a": states}})
+            self._unsub_states = async_track_state_change_event(self.hass, watch, self._on_state)
+        self._set_connected(True)
+
+    @callback
+    def update_device(self) -> None:
+        device =dr.async_get(self.hass).async_get_or_create(
+            config_entry_id=self.entry.entry_id,
+            identifiers={(DOMAIN, self.panel_id)},
+            connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(self.panel_id))},
+            manufacturer="SmartButtons",
+            model="SA6432 Panel",
+            name=self.entry.title,
+            sw_version=self.version,
+            configuration_url=f"http://{self.host}/",
+        )
+        self.device_id = device.id
+
+    @callback
+    def _on_state(self, event: Event[EventStateChangedData]) -> None:
+        entity_id = event.data["entity_id"]
+        self._send({"type": "event", "event": {"a": {entity_id: state_payload(event.data["new_state"])}}})
+
+    async def _on_call(self, data: dict[str, Any]) -> None:
+        domain = data.get("domain")
+        service = data.get("service")
+        target = (data.get("target") or {}).get("entity_id")
+        service_data = data.get("service_data") or {}
+        ok = False
+        # A panel may only control what its layout names, within the entity's own domain.
+        if (
+            isinstance(target, str)
+            and target in self._allowed
+            and target.split(".", 1)[0] == domain
+            and isinstance(service, str)
+            and isinstance(service_data, dict)
+        ):
+            try:
+                await self.hass.services.async_call(
+                    domain,
+                    service,
+                    {**service_data, ATTR_ENTITY_ID: target},
+                    blocking=True,
+                    context=Context(),
+                )
+                ok = True
+            except (HomeAssistantError, ValueError) as err:
+                _LOGGER.warning("%s: %s.%s on %s failed: %s", self.name, domain, service, target, err)
+        else:
+            _LOGGER.warning("%s: refused %s.%s on %s, not in its layout", self.name, domain, service, target)
+        self._send({"type": "result", "id": data.get("id"), "success": ok})
+
+    @callback
+    def _on_press(self, data: dict[str, Any]) -> None:
+        self.hass.bus.async_fire(
+            EVENT_BUTTON_PRESSED,
+            {
+                "device_id": self.device_id,
+                "panel": self.name,
+                "button": data.get("button"),
+                "gesture": data.get("gesture"),
+                "page": data.get("page"),
+            },
+        )
+
+    # ── From the editor ──
+
+    @callback
+    def push_password(self) -> None:
+        if self.connected:
+            self._send({"type": "password", "password": self.store.password})
+
+    @callback
+    def push_layout(self) -> bool:
+        """Sends the stored layout if the panel listens. It restarts when the layout changed."""
+        if self._ws is None or self.mode != "ha":
+            return False
+        self._send(
+            {"type": "config", "rev": self.store.revision(self.panel_id), "config": self.store.get(self.panel_id)}
+        )
+        return True

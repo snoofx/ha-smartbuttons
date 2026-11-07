@@ -1,0 +1,38 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "SmartButtons-Panel hinzufügen",
+        "description": "Normalerweise findet Home Assistant Panels selbst. Hier nur, wenn das nicht klappt.",
+        "data": {
+          "host": "IP-Adresse oder Hostname"
+        }
+      },
+      "confirm": {
+        "title": "SmartButtons-Panel",
+        "description": "Panel **{name}** ({host}) hinzufügen?"
+      },
+      "confirm_local": {
+        "title": "SmartButtons-Panel",
+        "description": "Panel **{name}** ({host}) wird gerade lokal verwaltet. Beim Hinzufügen stellt es auf Home Assistant um und startet neu. Seiten und Entitäten werden übernommen, der Token auf dem Panel wird nicht mehr benutzt."
+      }
+    },
+    "error": {
+      "cannot_connect": "Panel nicht erreichbar. Läuft Firmware ab v0.6.0?",
+      "adopt_failed": "Das Panel hat die Umstellung nicht bestätigt."
+    },
+    "abort": {
+      "already_configured": "Panel ist schon eingerichtet.",
+      "not_smartbuttons": "Kein SmartButtons-Panel.",
+      "paired_elsewhere": "Das Panel ist mit einem anderen Home Assistant gekoppelt. Am Panel SW6 und SW10 beim Einschalten 5 Sekunden halten, dann erneut hinzufügen."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connected": {
+        "name": "Verbindung"
+      }
+    }
+  }
+}
