@@ -14,7 +14,7 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/snoofx/ha-smartbuttons/issues",
   "requirements": [],
-  "version": "0.7.2",
+  "version": "0.7.3",
   "zeroconf": [
     "_smartbuttons._tcp.local."
   ]
