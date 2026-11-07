@@ -3,12 +3,19 @@
   "name": "SmartButtons",
   "codeowners": [],
   "config_flow": true,
-  "dependencies": ["http", "frontend", "panel_custom", "websocket_api"],
+  "dependencies": [
+    "http",
+    "frontend",
+    "panel_custom",
+    "websocket_api"
+  ],
   "documentation": "https://github.com/snoofx/ha-smartbuttons",
   "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/snoofx/ha-smartbuttons/issues",
   "requirements": [],
   "version": "0.6.0",
-  "zeroconf": ["_smartbuttons._tcp.local."]
+  "zeroconf": [
+    "_smartbuttons._tcp.local."
+  ]
 }

@@ -70,16 +70,17 @@ def link_proof(key: str, nonce: str) -> str:
     return hmac.new(bytes.fromhex(key), nonce.encode(), hashlib.sha256).hexdigest()
 
 
-async def async_adopt(hass: HomeAssistant, host: str, key: str) -> None:
-    """Switches a locally managed, unpaired panel to Home Assistant and pairs it. It restarts."""
+async def async_adopt(hass: HomeAssistant, host: str, key: str, password: str) -> None:
+    """Switches a locally managed, unpaired panel to Home Assistant and pairs it. It restarts.
+    A panel with password only accepts it together with that password."""
     session = async_get_clientsession(hass)
     async with asyncio.timeout(CONNECT_TIMEOUT):
         async with session.ws_connect(f"ws://{host}:{LINK_PORT}/", max_msg_size=MAX_MESSAGE) as ws:
             await ws.receive()  # hello
-            await ws.send_str(json_dumps({"type": "adopt", "key": key}))
+            await ws.send_str(json_dumps({"type": "adopt", "key": key, "password": password}))
             reply = await ws.receive()
             if reply.type != aiohttp.WSMsgType.TEXT or json.loads(reply.data).get("type") != "adopted":
-                raise ValueError("panel did not switch to Home Assistant")
+                raise ValueError("panel did not switch to Home Assistant (password?)")
 
 
 class PanelLink:
@@ -93,6 +94,7 @@ class PanelLink:
         self.host: str = entry.data[CONF_HOST]
         self._key: str = entry.data[CONF_LINK_KEY]
         self.auth_failed = False  # the panel is paired with another HA
+        self.hellos = 0  # counts restarts and reconnects, for the firmware update
         self.name: str = entry.title
         self.mode: str | None = None  # "ha" or "local", from the last hello
         self.version: str | None = None
@@ -224,11 +226,13 @@ class PanelLink:
         self._set_connected(False)
         self.mode = hello.get("mode")
         self.version = hello.get("version")
+        self.hellos += 1
         self.update_device()
+        async_dispatcher_send(self.hass, SIGNAL_PANEL_UPDATED.format(self.entry.entry_id))
 
         if not hello.get("paired"):
             # Fresh or reset panel: it takes the key, then says hello again.
-            self._send({"type": "pair", "key": self._key})
+            self._send({"type": "pair", "key": self._key, "password": self.store.password})
             return
         self._send({"type": "auth", "hmac": link_proof(self._key, str(hello.get("nonce", "")))})
         self.auth_failed = False
