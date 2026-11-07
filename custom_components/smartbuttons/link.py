@@ -26,6 +26,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.json import json_dumps
+from homeassistant.util import slugify
 
 from .const import (
     CONF_LINK_KEY,
@@ -35,7 +36,7 @@ from .const import (
     LINK_PORT,
     SIGNAL_PANEL_UPDATED,
 )
-from .store import LayoutError, LayoutStore, clean_layout, layout_entities
+from .store import EMPTY_LAYOUT, LayoutError, LayoutStore, clean_layout, layout_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +45,11 @@ ADOPT_TIMEOUT = 40
 RETRY_MIN = 2
 RETRY_MAX = 60
 MAX_MESSAGE = 64 * 1024
+
+
+def hostname(name: str) -> str:
+    """Panel name as the panel uses it: hostname, a-z 0-9 and "-", at most 31 characters."""
+    return slugify(name, separator="-")[:31].strip("-") or "smartbuttons"
 
 
 def state_payload(state: State | None) -> dict[str, Any]:
@@ -143,6 +149,7 @@ class PanelLink:
         self._key: str = entry.data[CONF_LINK_KEY]
         self.auth_failed = False  # the panel is paired with another HA
         self.hellos = 0  # counts restarts and reconnects, for the firmware update
+        self._name_requested: str | None = None
         self.name: str = entry.title
         self.mode: str | None = None  # "ha" or "local", from the last hello
         self.version: str | None = None
@@ -290,15 +297,19 @@ class PanelLink:
             async_dispatcher_send(self.hass, SIGNAL_PANEL_UPDATED.format(self.entry.entry_id))
             return
 
-        layout = self.store.get(self.panel_id)
-        if layout is None:
-            # First contact: HA takes over what the panel has, nothing gets lost.
+        if self._rename(str(hello.get("name", ""))):
+            return  # the panel restarts with the new hostname
+
+        if not self.store.has_panel(self.panel_id):
+            # First contact: the panel's layout becomes its own configuration, nothing gets lost.
+            panel_layout = hello.get("config") or {}
             try:
-                layout = clean_layout(hello.get("config") or {"buttons": []})
+                layout = clean_layout(panel_layout if panel_layout.get("buttons") is not None else EMPTY_LAYOUT)
             except LayoutError as err:
                 _LOGGER.warning("%s: layout of the panel not taken over: %s", self.name, err)
-                layout = {"buttons": []}
-            self.store.set(self.panel_id, layout)
+                layout = EMPTY_LAYOUT
+            self.store.adopt_panel(self.panel_id, self.entry.title, layout, bool(panel_layout.get("rotate_180")))
+        layout = self.store.layout_for(self.panel_id)
         rev = self.store.revision(self.panel_id)
         if hello.get("rev") != rev:
             self._send({"type": "config", "rev": rev, "config": layout})
@@ -321,8 +332,24 @@ class PanelLink:
         self._set_connected(True)
 
     @callback
+    def _rename(self, panel_name: str) -> bool:
+        """Sends the entry title as hostname if the panel has another. Asks only once per name:
+        a panel that keeps its name (invalid, or the old default "smartbuttons") is followed."""
+        target = hostname(self.entry.title)
+        if not panel_name or target == panel_name:
+            return False
+        if self.entry.title != "smartbuttons" and self._name_requested != target:
+            self._name_requested = target
+            self._send({"type": "name", "name": target})
+            return True
+        self.name = panel_name
+        self.hass.config_entries.async_update_entry(self.entry, title=panel_name)
+        self.update_device()
+        return False
+
+    @callback
     def update_device(self) -> None:
-        device =dr.async_get(self.hass).async_get_or_create(
+        device = dr.async_get(self.hass).async_get_or_create(
             config_entry_id=self.entry.entry_id,
             identifiers={(DOMAIN, self.panel_id)},
             connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(self.panel_id))},
@@ -394,6 +421,14 @@ class PanelLink:
         if self._ws is None or self.mode != "ha":
             return False
         self._send(
-            {"type": "config", "rev": self.store.revision(self.panel_id), "config": self.store.get(self.panel_id)}
+            {"type": "config", "rev": self.store.revision(self.panel_id), "config": self.store.layout_for(self.panel_id)}
         )
         return True
+
+    @callback
+    def push_name(self) -> None:
+        """The entry title is the panel's name; the panel takes it as hostname and restarts."""
+        self.name = self.entry.title
+        self.update_device()
+        if self.connected:
+            self._send({"type": "name", "name": hostname(self.entry.title)})

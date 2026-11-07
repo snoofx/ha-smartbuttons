@@ -1,7 +1,13 @@
-"""Panel layouts, stored in Home Assistant. The panels get them from here."""
+"""Configurations and panels, stored in Home Assistant.
+
+A configuration is a named layout (pages, buttons, entities). Each panel uses one
+configuration; several panels can share one, a change goes to all of them. The mounting
+(rotate_180) belongs to the panel, not to the configuration.
+"""
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import secrets
@@ -11,6 +17,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import ENTITY_KEYS, MAX_LAYOUT_BYTES, PASSWORD_LENGTH, STORAGE_KEY, STORAGE_VERSION
+
+EMPTY_LAYOUT: dict[str, Any] = {"buttons": [], "presets": {"entity_id": "", "scenes": []}}
+# Set per panel, never part of a configuration.
+PANEL_KEYS = ("name", "_managed", "rotate_180")
 
 
 class LayoutError(ValueError):
@@ -24,10 +34,10 @@ def layout_revision(layout: dict[str, Any]) -> str:
 
 
 def clean_layout(layout: Any) -> dict[str, Any]:
-    """Checks a layout from the editor or a panel. The hostname stays on the panel."""
+    """Checks a layout from the editor or a panel and drops what belongs to the panel."""
     if not isinstance(layout, dict) or not isinstance(layout.get("buttons"), list):
         raise LayoutError("layout needs a buttons list")
-    layout = {k: v for k, v in layout.items() if k not in ("name", "_managed")}
+    layout = {k: v for k, v in layout.items() if k not in PANEL_KEYS}
     size = len(json.dumps(layout, separators=(",", ":"), ensure_ascii=False).encode())
     if size > MAX_LAYOUT_BYTES:
         raise LayoutError(f"layout has {size} bytes, the panel takes {MAX_LAYOUT_BYTES}")
@@ -49,17 +59,35 @@ def layout_entities(value: Any) -> set[str]:
     return found
 
 
+class _VersionedStore(Store[dict[str, Any]]):
+    async def _async_migrate_func(
+        self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        if old_major_version == 1:
+            # 0.6: one layout per panel. Each becomes its own configuration.
+            configs, panels = {}, {}
+            for panel_id, entry in old_data.get("panels", {}).items():
+                layout = dict(entry["layout"])
+                rotate = bool(layout.pop("rotate_180", False))
+                configs[panel_id] = {"name": f"Panel {panel_id[-6:]}", "layout": layout}
+                panels[panel_id] = {"config": panel_id, "rotate_180": rotate}
+            return {"password": old_data.get("password", ""), "configs": configs, "panels": panels}
+        return old_data
+
+
 class LayoutStore:
-    """Layouts of all panels, keyed by panel id (MAC)."""
+    """All configurations and panel assignments of this HA."""
 
     def __init__(self, hass: HomeAssistant) -> None:
-        self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        self._panels: dict[str, dict[str, Any]] = {}
+        self._store = _VersionedStore(hass, STORAGE_VERSION, STORAGE_KEY)
+        self.configs: dict[str, dict[str, Any]] = {}
+        self.panels: dict[str, dict[str, Any]] = {}
         self.password: str = ""
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
-        self._panels = data.get("panels", {})
+        self.configs = data.get("configs", {})
+        self.panels = data.get("panels", {})
         self.password = data.get("password", "")
         if not self.password:
             # Panels are protected from the start, the admin sees it in the editor.
@@ -67,28 +95,75 @@ class LayoutStore:
             self._save()
 
     def _save(self) -> None:
-        self._store.async_delay_save(lambda: {"panels": self._panels, "password": self.password}, 1)
+        self._store.async_delay_save(
+            lambda: {"password": self.password, "configs": self.configs, "panels": self.panels}, 1
+        )
 
     def set_password(self, password: str) -> None:
         self.password = password
         self._save()
 
-    def get(self, panel_id: str) -> dict[str, Any] | None:
-        """The stored layout, or None while HA has none for this panel."""
-        entry = self._panels.get(panel_id)
-        return entry["layout"] if entry else None
+    # ── Configurations ──
 
-    def revision(self, panel_id: str) -> str | None:
-        entry = self._panels.get(panel_id)
-        return entry["rev"] if entry else None
-
-    def set(self, panel_id: str, layout: dict[str, Any]) -> str:
-        """Stores a checked layout and returns its revision."""
-        rev = layout_revision(layout)
-        self._panels[panel_id] = {"layout": layout, "rev": rev}
+    def create_config(self, name: str, layout: dict[str, Any] | None = None) -> str:
+        config_id = secrets.token_hex(4)
+        self.configs[config_id] = {"name": name, "layout": copy.deepcopy(layout or EMPTY_LAYOUT)}
         self._save()
-        return rev
+        return config_id
 
-    def remove(self, panel_id: str) -> None:
-        if self._panels.pop(panel_id, None) is not None:
+    def update_config(self, config_id: str, *, name: str | None = None, layout: dict[str, Any] | None = None) -> None:
+        config = self.configs[config_id]
+        if name is not None:
+            config["name"] = name
+        if layout is not None:
+            config["layout"] = layout
+        self._save()
+
+    def delete_config(self, config_id: str) -> None:
+        if self.users(config_id):
+            raise LayoutError("configuration is still used by a panel")
+        del self.configs[config_id]
+        self._save()
+
+    def users(self, config_id: str) -> list[str]:
+        return [pid for pid, panel in self.panels.items() if panel.get("config") == config_id]
+
+    # ── Panels ──
+
+    def has_panel(self, panel_id: str) -> bool:
+        return panel_id in self.panels and self.panels[panel_id].get("config") in self.configs
+
+    def adopt_panel(self, panel_id: str, name: str, layout: dict[str, Any], rotate_180: bool) -> None:
+        """First contact: the panel's own layout becomes its configuration, nothing gets lost."""
+        config_id = self.create_config(name, layout)
+        self.panels[panel_id] = {"config": config_id, "rotate_180": rotate_180}
+        self._save()
+
+    def panel(self, panel_id: str) -> dict[str, Any]:
+        return self.panels[panel_id]
+
+    def set_panel(self, panel_id: str, *, config: str | None = None, rotate_180: bool | None = None) -> None:
+        panel = self.panels[panel_id]
+        if config is not None:
+            if config not in self.configs:
+                raise LayoutError("unknown configuration")
+            panel["config"] = config
+        if rotate_180 is not None:
+            panel["rotate_180"] = rotate_180
+        self._save()
+
+    def remove_panel(self, panel_id: str) -> None:
+        """The configuration stays: other panels may use it, or it serves as template."""
+        if self.panels.pop(panel_id, None) is not None:
             self._save()
+
+    def layout_for(self, panel_id: str) -> dict[str, Any]:
+        """What the panel gets: its configuration plus its mounting."""
+        panel = self.panels[panel_id]
+        layout = copy.deepcopy(self.configs[panel["config"]]["layout"])
+        if panel.get("rotate_180"):
+            layout["rotate_180"] = True
+        return layout
+
+    def revision(self, panel_id: str) -> str:
+        return layout_revision(self.layout_for(panel_id))

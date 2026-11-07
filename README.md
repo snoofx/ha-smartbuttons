@@ -4,7 +4,9 @@ Integration für SmartButtons-Panels: 10 LCD-Tasten (SA6432, 64×32 px) an einem
 Home Assistant findet die Panels selbst, verwaltet ihre Seiten und schaltet, was die Tasten auslösen.
 
 - Panels erscheinen per mDNS unter Einstellungen → Geräte & Dienste.
-- Seiten-Editor mit Pixel-Vorschau in der Seitenleiste „SmartButtons“ (nur Admins), Entitäten aus HA zur Auswahl.
+- Seitenleiste „SmartButtons“ (nur Admins): Seiten-Editor mit Pixel-Vorschau, Suche nach Entitäten
+  und Anzeigenamen, Panels umbenennen.
+- Konfigurationen: eine Belegung für mehrere Panels, Vorlagen kopieren und auf andere Panels ausrollen.
 - Jedes Panel ist mit genau einem HA gekoppelt und darf nur die Entitäten seiner Seiten schalten.
 - Ein Passwort schützt Web-UI und OTA aller Panels.
 - Jeder Tastendruck kommt als Event `smartbuttons_button_pressed` für eigene Automationen.

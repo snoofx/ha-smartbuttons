@@ -44,7 +44,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartButtonsConfigEntry)
     link.update_device()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     link.start()
+    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     return True
+
+
+async def _async_entry_updated(hass: HomeAssistant, entry: SmartButtonsConfigEntry) -> None:
+    """Renamed in HA (entry title): the panel follows."""
+    if entry.runtime_data.name != entry.title:
+        entry.runtime_data.push_name()
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SmartButtonsConfigEntry) -> bool:
@@ -57,7 +64,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: SmartButtonsConfigEntry
     The panel keeps its copy of the layout."""
     store: LayoutStore | None = hass.data.get(DOMAIN)
     if store is not None and entry.unique_id:
-        store.remove(entry.unique_id)
+        store.remove_panel(entry.unique_id)
     try:
         await async_unpair(hass, entry.data[CONF_HOST], entry.data[CONF_LINK_KEY])
     except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as err:
