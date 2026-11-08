@@ -10,6 +10,9 @@ Home Assistant findet die Panels selbst, verwaltet ihre Seiten und schaltet, was
 - Jedes Panel ist mit genau einem HA gekoppelt und darf nur die Entitäten seiner Seiten schalten.
 - Ein Passwort schützt Web-UI und OTA aller Panels.
 - Jeder Tastendruck kommt als Event `smartbuttons_button_pressed` für eigene Automationen.
+- Buttons pro Panel: „Identifizieren“ (Panel zeigt, wo es hängt) und „Aufwecken“ (Bildschirmschoner
+  aus, z. B. per Bewegungsmelder). Beide ab Panel-Firmware 0.9.2.
+- Protokoll zwischen HA und Panel, mit Versionen: [PROTOCOL.md](PROTOCOL.md).
 
 Voraussetzung: Panel-Firmware ab v0.6.0, Home Assistant ab 2025.1.
 

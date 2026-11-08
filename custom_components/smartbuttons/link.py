@@ -33,8 +33,10 @@ from .const import (
     CONF_LINK_KEY,
     DOMAIN,
     EVENT_BUTTON_PRESSED,
+    FEATURE_PROTOCOL,
     FORWARDED_ATTRIBUTES,
     LINK_PORT,
+    PROTOCOL,
     SIGNAL_PANEL_UPDATED,
 )
 from .store import EMPTY_LAYOUT, LayoutError, LayoutStore, clean_layout, layout_entities
@@ -161,6 +163,7 @@ class PanelLink:
         self.name: str = entry.title
         self.mode: str | None = None  # "ha" or "local", from the last hello
         self.version: str | None = None
+        self.proto = 1  # message version of the panel, from the hello
         self.connected = False  # welcomed: states and calls flow
         self.device_id: str | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -179,6 +182,7 @@ class PanelLink:
             "host": self.host,
             "mode": self.mode,
             "version": self.version,
+            "proto": self.proto,
             "connected": self.connected,
             "auth_failed": self.auth_failed,
         }
@@ -305,6 +309,8 @@ class PanelLink:
         self._set_connected(False)
         self.mode = hello.get("mode")
         self.version = hello.get("version")
+        proto = hello.get("proto", 1)
+        self.proto = proto if isinstance(proto, int) and proto >= 1 else 1
         self.hellos += 1
         self.update_device()
         async_dispatcher_send(self.hass, SIGNAL_PANEL_UPDATED.format(self.entry.entry_id))
@@ -342,7 +348,7 @@ class PanelLink:
         self._allowed = layout_entities(layout)
         watch = [e for e in hello.get("watch", []) if isinstance(e, str)]
         self._send({"type": "password", "password": self.store.password})
-        self._send({"type": "welcome", "ha_version": HA_VERSION})
+        self._send({"type": "welcome", "ha_version": HA_VERSION, "proto": PROTOCOL})
         states = {}
         for entity_id in watch:
             state = self.hass.states.get(entity_id)
@@ -449,12 +455,24 @@ class PanelLink:
         )
         return True
 
+    def supports(self, feature: str) -> bool:
+        """The panel's firmware knows this message (FEATURE_PROTOCOL)."""
+        return self.proto >= FEATURE_PROTOCOL[feature]
+
     @callback
     def locate(self) -> bool:
         """The panel shows where it hangs until a key is pressed (at most 5 minutes)."""
-        if not self.connected:
+        if not (self.connected and self.supports("locate")):
             return False
         self._send({"type": "locate"})
+        return True
+
+    @callback
+    def wake_screen(self) -> bool:
+        """Screensaver off, and the panel stays on for its screensaver time from now."""
+        if not (self.connected and self.supports("wake")):
+            return False
+        self._send({"type": "wake"})
         return True
 
     @callback

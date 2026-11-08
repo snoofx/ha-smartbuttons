@@ -42,6 +42,11 @@
       "firmware": {
         "name": "Firmware"
       }
+    },
+    "button": {
+      "wake": {
+        "name": "Wake up"
+      }
     }
   }
 }

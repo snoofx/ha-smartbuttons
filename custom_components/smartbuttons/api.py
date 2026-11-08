@@ -199,8 +199,11 @@ def ws_update_panel(hass: HomeAssistant, connection: websocket_api.ActiveConnect
 def ws_locate(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     """Ping pong in the top row of the panel, its name and address below."""
     link = _link(hass, msg["entry_id"])
-    if link is None or not link.locate():
+    if link is None or not link.connected:
         connection.send_error(msg["id"], "not_connected", "Panel is not connected")
+        return
+    if not link.locate():
+        connection.send_error(msg["id"], "not_supported", "Panel firmware too old, update it (0.9.2 or newer)")
         return
     connection.send_result(msg["id"])
 

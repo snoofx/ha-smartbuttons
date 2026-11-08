@@ -5,6 +5,14 @@ DOMAIN = "smartbuttons"
 # The panel firmware listens here for the integration (ha.h, HA_LINK_PORT).
 LINK_PORT = 81
 
+# Messages between HA and panel, see PROTOCOL.md. The panel sends its version in the hello
+# ("proto", missing = 1); HA speaks every older version and offers only what the panel knows.
+PROTOCOL = 2
+FEATURE_PROTOCOL = {
+    "locate": 2,
+    "wake": 2,
+}
+
 EVENT_BUTTON_PRESSED = f"{DOMAIN}_button_pressed"
 
 STORAGE_KEY = f"{DOMAIN}.panels"
