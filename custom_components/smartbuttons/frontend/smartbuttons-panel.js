@@ -78,10 +78,16 @@ function haHost(panel) {
       const rot = el('input', {type: 'checkbox', checked: p.rotate_180, disabled: !p.config});
       rot.onchange = () => act(ws({type: 'smartbuttons/update_panel', entry_id: p.entry_id, rotate_180: rot.checked}),
                                'Einbaulage gesetzt, das Panel startet neu.');
+      const locate = el('button', {textContent: 'Finden', disabled: !p.connected,
+                                   title: 'Obere Reihe blinkt, eine Taste am Panel beendet'});
+      locate.onclick = () => act(ws({type: 'smartbuttons/locate', entry_id: p.entry_id}),
+                                 `${p.name} blinkt, eine Taste am Panel beendet.`);
       return el('tr', {},
         el('td', {className: 'name'}, el('div', {className: 'inline'}, name, rename),
            el('div', {className: 'state', textContent: `ID ${p.id}` + (p.host ? ` · ${p.host}` : '')})),
-        el('td', {}, el('span', {className: 'dot ' + dotClass}), el('span', {textContent: text}),
+        el('td', {}, el('div', {className: 'inline'},
+                        el('span', {}, el('span', {className: 'dot ' + dotClass}), el('span', {textContent: text})),
+                        locate),
            el('div', {className: 'state', textContent: p.version || ''})),
         el('td', {}, config),
         el('td', {}, el('label', {className: 'check'}, rot, '180°')));

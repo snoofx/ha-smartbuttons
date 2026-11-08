@@ -24,7 +24,7 @@ from .store import LayoutStore
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-PLATFORMS = [Platform.BINARY_SENSOR, Platform.UPDATE]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.UPDATE]
 
 type SmartButtonsConfigEntry = ConfigEntry[PanelLink]
 

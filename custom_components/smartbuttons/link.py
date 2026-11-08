@@ -450,6 +450,14 @@ class PanelLink:
         return True
 
     @callback
+    def locate(self) -> bool:
+        """The panel shows where it hangs until a key is pressed (at most 5 minutes)."""
+        if not self.connected:
+            return False
+        self._send({"type": "locate"})
+        return True
+
+    @callback
     def push_name(self) -> None:
         """The entry title is the panel's name; the panel takes it as hostname and restarts."""
         self.name = self.entry.title

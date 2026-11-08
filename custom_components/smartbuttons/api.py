@@ -42,7 +42,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
 @callback
 def async_register_commands(hass: HomeAssistant) -> None:
     for command in (ws_panels, ws_configs, ws_get_config, ws_save_config, ws_create_config,
-                    ws_delete_config, ws_update_panel, ws_get_password, ws_set_password):
+                    ws_delete_config, ws_update_panel, ws_locate, ws_get_password, ws_set_password):
         websocket_api.async_register_command(hass, command)
 
 
@@ -191,6 +191,18 @@ def ws_update_panel(hass: HomeAssistant, connection: websocket_api.ActiveConnect
         # The update listener of the entry sends the name to the panel.
         hass.config_entries.async_update_entry(link.entry, title=name)
     connection.send_result(msg["id"], {"name": link.entry.title})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "smartbuttons/locate", vol.Required("entry_id"): str})
+@websocket_api.require_admin
+@callback
+def ws_locate(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Ping pong in the top row of the panel, its name and address below."""
+    link = _link(hass, msg["entry_id"])
+    if link is None or not link.locate():
+        connection.send_error(msg["id"], "not_connected", "Panel is not connected")
+        return
+    connection.send_result(msg["id"])
 
 
 @websocket_api.websocket_command({vol.Required("type"): "smartbuttons/get_password"})
