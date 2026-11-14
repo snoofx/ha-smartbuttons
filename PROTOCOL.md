@@ -169,9 +169,12 @@ kompaktes JSON mit sortierten Schlüsseln. HA berechnet sie, das Panel speichert
 
 ### Grenzen
 
-- **HA:** Die Belegung ist höchstens 8000 Byte groß (`MAX_LAYOUT_BYTES`).
-- **Panel:** Es liest eine Belegung in ein JSON-Dokument mit 12 KiB, Zustandsnachrichten in
-  eines mit 2 KiB.
+- **HA:** Die Belegung ist höchstens 8000 Byte groß (`MAX_LAYOUT_BYTES`) und braucht auf dem
+  Panel höchstens 18000 Byte JSON-Speicher (`MAX_LAYOUT_MEMORY`, geschätzt mit 16 Byte je Wert
+  plus allen Zeichenketten). Viele kleine Werte, z. B. Favoriten, brauchen mehr als ihre Bytes.
+- **Panel:** Es liest eine Belegung in ein JSON-Dokument mit 20 KiB (bis Firmware 0.9.4: 12 KiB),
+  Zustandsnachrichten in eines mit 2 KiB. Passt die gespeicherte Konfiguration nicht hinein,
+  speichert das Panel nichts mehr, statt sie gekürzt zurückzuschreiben.
 
 ## Außerhalb von Port 81
 

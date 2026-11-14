@@ -35,8 +35,11 @@ FORWARDED_ATTRIBUTES = (
 # Keys in a panel layout that hold entities the panel may control or show.
 ENTITY_KEYS = ("entity_id", "state_entity", "window_entity")
 
-# The firmware reads its layout into a 12 KiB JSON document (CONFIG_DOC_SIZE).
+# The firmware reads its layout into a 20 KiB JSON document (CONFIG_DOC_SIZE, 12 KiB up to
+# 0.9.4). What counts is the memory ArduinoJson needs, see store.layout_memory(); the rest of
+# the document holds the device settings.
 MAX_LAYOUT_BYTES = 8000
+MAX_LAYOUT_MEMORY = 18000
 
 CONF_LINK_KEY = "link_key"
 

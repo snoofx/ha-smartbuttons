@@ -16,7 +16,14 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .const import ENTITY_KEYS, MAX_LAYOUT_BYTES, PASSWORD_LENGTH, STORAGE_KEY, STORAGE_VERSION
+from .const import (
+    ENTITY_KEYS,
+    MAX_LAYOUT_BYTES,
+    MAX_LAYOUT_MEMORY,
+    PASSWORD_LENGTH,
+    STORAGE_KEY,
+    STORAGE_VERSION,
+)
 
 EMPTY_LAYOUT: dict[str, Any] = {"buttons": [], "pages": []}
 MAX_PAGES = 8               # own pages next to START, as in the firmware
@@ -82,7 +89,28 @@ def clean_layout(layout: Any) -> dict[str, Any]:
     size = len(json.dumps(layout, separators=(",", ":"), ensure_ascii=False).encode())
     if size > MAX_LAYOUT_BYTES:
         raise LayoutError(f"layout has {size} bytes, the panel takes {MAX_LAYOUT_BYTES}")
+    memory = layout_memory(layout)
+    if memory > MAX_LAYOUT_MEMORY:
+        raise LayoutError(
+            f"layout needs {memory} bytes of panel memory, the panel has {MAX_LAYOUT_MEMORY}: "
+            "fewer cells, favorites or options"
+        )
     return layout
+
+
+def layout_memory(value: Any) -> int:
+    """What ArduinoJson 6 on the ESP32 needs for a layout: 16 bytes per value, strings copied.
+
+    Many small values cost more than their JSON bytes, up to 2.3 times. Strings are counted
+    every time, which is on the safe side of the deduplication in the firmware.
+    """
+    if isinstance(value, dict):
+        return sum(16 + len(str(k).encode()) + 1 + layout_memory(v) for k, v in value.items())
+    if isinstance(value, list):
+        return sum(16 + layout_memory(v) for v in value)
+    if isinstance(value, str):
+        return len(value.encode()) + 1
+    return 0
 
 
 def layout_entities(value: Any) -> set[str]:
